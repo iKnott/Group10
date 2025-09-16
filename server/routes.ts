@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertAssessmentSchema, type CultureResults, type CultureType } from "@shared/schema";
+import { type CultureResults, type CultureType } from "@shared/schema";
 import { z } from "zod";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -19,23 +19,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Submit assessment responses and get results
   app.post("/api/assessments", async (req, res) => {
     try {
-      const { responses } = insertAssessmentSchema.parse(req.body);
-      
+      // Permissive validation to handle differing JSON parsers in hosting envs
+      const allowedValues: ReadonlyArray<CultureType> = [
+        "caring",
+        "purpose",
+        "learning",
+        "enjoyment",
+        "results",
+        "authority",
+        "safety",
+        "order",
+      ];
+
+      const body = req.body as unknown;
+      const responsesRaw = (body as any)?.responses;
+
+      if (!responsesRaw || typeof responsesRaw !== "object" || Array.isArray(responsesRaw)) {
+        res.status(400).json({ error: "Invalid request data", details: [{ path: ["responses"], message: "responses must be an object" }] });
+        return;
+      }
+
+      const responses: Record<string, string> = {};
+      for (const [key, value] of Object.entries(responsesRaw as Record<string, unknown>)) {
+        const strVal = typeof value === "string" ? value : String(value);
+        if (allowedValues.includes(strVal as CultureType)) {
+          responses[key] = strVal;
+        }
+      }
+
+      if (Object.keys(responses).length === 0) {
+        res.status(400).json({ error: "Invalid request data", details: [{ path: ["responses"], message: "no valid responses provided" }] });
+        return;
+      }
+
       // Calculate culture results
       const results = calculateCultureResults(responses);
-      
       const assessment = await storage.createAssessment({
         responses,
         results,
       });
 
       res.json(assessment);
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        res.status(400).json({ error: "Invalid request data", details: error.errors });
-      } else {
-        res.status(500).json({ error: "Failed to create assessment" });
-      }
+    } catch (_error) {
+      res.status(500).json({ error: "Failed to create assessment" });
     }
   });
 
